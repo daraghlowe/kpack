@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +13,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/buildpacks/lifecycle/platform"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/authn/k8schain"
+	corev1alpha1 "github.com/pivotal/kpack/pkg/apis/core/v1alpha1"
 	"github.com/pkg/errors"
 	"github.com/sigstore/cosign/cmd/cosign/cli/sign"
 
@@ -21,13 +27,17 @@ import (
 )
 
 const (
-	registrySecretsDir   = "/var/build-secrets"
-	reportFilePath       = "/var/report/report.toml"
-	notarySecretDir      = "/var/notary/v1"
-	cosignSecretLocation = "/var/build-secrets/cosign"
+	registrySecretsDir    = "/var/build-secrets"
+	reportFilePath        = "/var/report/report.toml"
+	buildMetadataFilePath = "/layers/config/metadata.toml"
+	notarySecretDir       = "/var/notary/v1"
+	cosignSecretLocation  = "/var/build-secrets/cosign"
 )
 
 var (
+	stackID                 string
+	stackRunImage           string
+	terminationMessagePath  string
 	notaryV1URL             string
 	dockerCredentials       flaghelpers.CredentialsFlags
 	dockerCfgCredentials    flaghelpers.CredentialsFlags
@@ -41,6 +51,9 @@ var (
 )
 
 func init() {
+	flag.StringVar(&stackID, "stack-id", "", "Stack ID for build")
+	flag.StringVar(&stackRunImage, "run-image", "", "Stack run image for build")
+	flag.StringVar(&terminationMessagePath, "termination-message-path", "", "Path to termination message file")
 	flag.StringVar(&notaryV1URL, "notary-v1-url", "", "Notary V1 server url")
 	flag.Var(&dockerCredentials, "basic-docker", "Basic authentication for docker of the form 'secretname=git.domain.com'")
 	flag.Var(&dockerCfgCredentials, "dockercfg", "Docker Cfg credentials in the form of the path to the credential")
@@ -57,6 +70,36 @@ func init() {
 func main() {
 	flag.Parse()
 
+	var report platform.ExportReport
+	_, err := toml.DecodeFile(reportFilePath, &report)
+	if err != nil {
+		log.Fatal(errors.Wrap(err, "toml decode"))
+	}
+
+	var buildMetadata platform.BuildMetadata
+	_, err = toml.DecodeFile(buildMetadataFilePath, &buildMetadata)
+	if err != nil {
+		log.Fatal(errors.Wrap(err, "toml decode"))
+	}
+
+	bMeta, err := getBuildMetadata(report, buildMetadata, stackID, stackRunImage)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	//data, err := compress(bMeta)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	data, err := json.Marshal(bMeta)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = ioutil.WriteFile(terminationMessagePath, data, 0777)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	if hasCosign() || notaryV1URL != "" {
 		err := signImage()
 		if err != nil {
@@ -67,11 +110,41 @@ func main() {
 	logger.Println("Build successful")
 }
 
+type BuildMetadata struct {
+	BuildpackMetadata []corev1alpha1.BuildpackMetadata
+	LatestImage       string
+	StackRunImage     string
+	StackID           string
+}
+
+func getBuildMetadata(report platform.ExportReport, metadata platform.BuildMetadata, stackID, stackRunImage string) (BuildMetadata, error) {
+	buildpackMetadata := make([]corev1alpha1.BuildpackMetadata, 0, len(metadata.Buildpacks))
+	for i, bp := range metadata.Buildpacks {
+		buildpackMetadata[i] = corev1alpha1.BuildpackMetadata{
+			Id:       bp.ID,
+			Version:  bp.Version,
+			Homepage: bp.Homepage,
+		}
+	}
+	return BuildMetadata{
+		BuildpackMetadata: buildpackMetadata,
+		LatestImage:       fmt.Sprintf("%s@%s", report.Image.Tags[0], report.Image.Digest),
+		StackRunImage:     stackRunImage,
+		StackID:           stackID,
+	}, nil
+}
+
 func signImage() error {
 	var report platform.ExportReport
 	_, err := toml.DecodeFile(reportFilePath, &report)
 	if err != nil {
 		return errors.Wrap(err, "toml decode")
+	}
+
+	ctx := context.Background()
+	k8sKeychain, err := k8schain.New(ctx, nil, k8schain.Options{})
+	if err != nil {
+		logger.Println(err)
 	}
 
 	creds, err := dockercreds.ParseMountedAnnotatedSecrets(registrySecretsDir, dockerCredentials)
@@ -142,7 +215,8 @@ func signImage() error {
 			Client:  &registry.Client{},
 			Factory: &notary.RemoteRepositoryFactory{},
 		}
-		if err := signer.Sign(notaryV1URL, notarySecretDir, report, creds); err != nil {
+		keychain := authn.NewMultiKeychain(creds, k8sKeychain)
+		if err := signer.Sign(notaryV1URL, notarySecretDir, report, keychain); err != nil {
 			return err
 		}
 	}

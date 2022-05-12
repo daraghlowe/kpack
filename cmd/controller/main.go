@@ -124,7 +124,6 @@ func main() {
 	k8sInformerFactory := informers.NewSharedInformerFactory(k8sClient, options.ResyncPeriod)
 	pvcInformer := k8sInformerFactory.Core().V1().PersistentVolumeClaims()
 	podInformer := k8sInformerFactory.Core().V1().Pods()
-
 	keychainFactory, err := k8sdockercreds.NewSecretKeychainFactory(k8sClient)
 	if err != nil {
 		log.Fatalf("could not create k8s keychain factory: %s", err)

@@ -17,17 +17,19 @@ import (
 )
 
 const (
-	SecretTemplateName                     = "secret-volume-%s"
-	DefaultSecretPathName                  = "/var/build-secrets/%s"
-	CosignDefaultSecretPathName            = "/var/build-secrets/cosign/%s"
-	BuildLabel                             = "kpack.io/build"
-	DOCKERSecretAnnotationPrefix           = "kpack.io/docker"
-	GITSecretAnnotationPrefix              = "kpack.io/git"
-	COSIGNDockerMediaTypesAnnotationPrefix = "kpack.io/cosign.docker-media-types"
-	COSIGNRespositoryAnnotationPrefix      = "kpack.io/cosign.repository"
-	COSIGNSecretDataCosignKey              = "cosign.key"
-	COSIGNSecretDataCosignPassword         = "cosign.password"
-	k8sOSLabel                             = "kubernetes.io/os"
+	SecretTemplateName                        = "secret-volume-%s"
+	DefaultSecretPathName                     = "/var/build-secrets/%s"
+	CosignDefaultSecretPathName               = "/var/build-secrets/cosign/%s"
+	ReportTOMLPathName                        = "/var/report/report.toml"
+	CompletionContainerTerminationMessagePath = "/tmp/termination-path"
+	BuildLabel                                = "kpack.io/build"
+	DOCKERSecretAnnotationPrefix              = "kpack.io/docker"
+	GITSecretAnnotationPrefix                 = "kpack.io/git"
+	COSIGNDockerMediaTypesAnnotationPrefix    = "kpack.io/cosign.docker-media-types"
+	COSIGNRespositoryAnnotationPrefix         = "kpack.io/cosign.repository"
+	COSIGNSecretDataCosignKey                 = "cosign.key"
+	COSIGNSecretDataCosignPassword            = "cosign.password"
+	k8sOSLabel                                = "kubernetes.io/os"
 
 	cacheDirName                 = "cache-dir"
 	layersDirName                = "layers-dir"
@@ -325,6 +327,18 @@ func (b *Build) BuildPod(images BuildPodImages, buildContext BuildContext) (*cor
 					Command: []string{"/cnb/process/completion"},
 					Env: []corev1.EnvVar{
 						homeEnv,
+						{
+							Name:  "TERMINATION_MESSAGE_PATH",
+							Value: CompletionContainerTerminationMessagePath,
+						},
+						{
+							Name:  "STACK_ID",
+							Value: buildContext.BuildPodBuilderConfig.StackID,
+						},
+						{
+							Name:  "STACK_RUN_IMAGE",
+							Value: buildContext.BuildPodBuilderConfig.RunImage,
+						},
 					},
 					Args: args(
 						b.notaryArgs(),
@@ -332,7 +346,9 @@ func (b *Build) BuildPod(images BuildPodImages, buildContext BuildContext) (*cor
 						cosignSecretArgs,
 						b.cosignArgs(),
 					),
-					Resources: b.Spec.Resources,
+					TerminationMessagePath:   CompletionContainerTerminationMessagePath,
+					TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+					Resources:                b.Spec.Resources,
 					VolumeMounts: volumeMounts(
 						secretVolumeMounts,
 						cosignVolumeMounts,
@@ -340,6 +356,10 @@ func (b *Build) BuildPod(images BuildPodImages, buildContext BuildContext) (*cor
 							reportVolume,
 							notaryV1Volume,
 							homeVolume,
+							{
+								Name:      layersDirName,
+								MountPath: "/metadata",
+													},
 						},
 					),
 					ImagePullPolicy: corev1.PullIfNotPresent,
@@ -501,7 +521,8 @@ func (b *Build) BuildPod(images BuildPodImages, buildContext BuildContext) (*cor
 							"-app=/workspace",
 							"-group=/layers/group.toml",
 							"-analyzed=/layers/analyzed.toml",
-							"-project-metadata=/layers/project-metadata.toml"},
+							"-project-metadata=/layers/project-metadata.toml",
+						},
 							exporterCacheArgs,
 							func() []string {
 								if b.DefaultProcess() == "" {
@@ -517,7 +538,7 @@ func (b *Build) BuildPod(images BuildPodImages, buildContext BuildContext) (*cor
 								if platformAPI.Equal(lowestSupportedPlatformVersion) {
 									return nil
 								}
-								return []string{"-report=/var/report/report.toml"}
+								return []string{fmt.Sprintf("-report=%s", ReportTOMLPathName)}
 
 							}(),
 							b.Spec.Tags),
@@ -771,7 +792,7 @@ func (b *Build) rebasePod(buildContext BuildContext, images BuildPodImages) (*co
 						"--last-built-image",
 						b.Spec.LastBuild.Image,
 						"--report",
-						"/var/report/report.toml",
+						ReportTOMLPathName,
 					),
 						secretArgs,
 						imagePullArgs,

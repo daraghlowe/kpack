@@ -116,7 +116,7 @@ func (c *Reconciler) reconcile(ctx context.Context, build *buildapi.Build) error
 			return err
 		}
 
-		build.Status.BuildMetadata = buildMetadataFromBuiltImage(image)
+		build.Status.BuildMetadata = buildpackMetadataFromBuiltImage(image)
 		build.Status.LatestImage = image.Identifier
 		build.Status.LatestCacheImage = cacheImageId
 		build.Status.Stack.RunImage = image.Stack.RunImage
@@ -222,7 +222,7 @@ func (c *Reconciler) updateStatus(ctx context.Context, desired *buildapi.Build) 
 	return err
 }
 
-func buildMetadataFromBuiltImage(image cnb.BuiltImage) []corev1alpha1.BuildpackMetadata {
+func buildpackMetadataFromBuiltImage(image cnb.BuiltImage) []corev1alpha1.BuildpackMetadata {
 	buildpackMetadata := make([]corev1alpha1.BuildpackMetadata, 0, len(image.BuildpackMetadata))
 	for _, metadata := range image.BuildpackMetadata {
 		buildpackMetadata = append(buildpackMetadata, corev1alpha1.BuildpackMetadata{
